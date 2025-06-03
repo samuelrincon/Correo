@@ -1,0 +1,47 @@
+{
+    "Frontpoint": [
+        "Frontpoint Staff Status EOD",
+        "Frontpoint Staff Status intraday",
+        "Frontpoint Post mortem"
+    ],
+    "Cargurus": [
+        "CarGurus StaffStatus report",
+        "CarGurus StaffStatus report EOD",
+        "CarGurus Voice Interval Report",
+        "CarGurus Chat/SMS Interval Report"
+    ],
+    "Levi's": [
+        "Short Calls Daily Report",
+        "Post Mortem | Levi's | EOD report"
+    ],
+    "Optavia": [
+        "Coach Interval Report | Optavia | Coach SMS, Coach Webchat, Coach Voice",
+        "Client Interval Report | Optavia | Client Voice, Client Webchat, Client SMS"
+    ],
+    "Macmillan": [
+        "Attendence | Macmillan | All LoBs"
+    ],
+    "Mejuri": [
+        "WFM - Mejuri | StaffStatus"
+    ],
+    "Newell": [
+        "NB: Service Level",
+        "Newell | Post Mortem"
+    ],
+    "Weber Grills": [
+        "Weber Grills | Staff Status Weber Specialty Queues",
+        "Weber Grills | Staff Status Weber",
+        "Weber Grills | Post-Mortem Report"
+    ],
+    "Deloitte": [
+        "WFM - DELOITTE | Staff Status EOD"
+    ],
+    "GNC": [
+        "WFM - GNC | Staff Status EOD",
+        "WFM-EOD GNC"
+    ],
+    "AOSmith": [
+        "WFM - AOS | Staff Status & SLA - OCC - Ready Time EOD",
+        "WFM - AOS | MTD & WTD KPIs Results"
+    ]
+}
