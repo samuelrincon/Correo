@@ -19,9 +19,7 @@ EMAIL_CONFIG = {
 }
 
 # Archivo para guardar las campañas
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CAMPAIGNS_FILE = os.path.join(BASE_DIR, 'campaigns.json')
+CAMPAIGNS_FILE = 'campaigns.json'
 
 # Cargar campañas desde archivo o usar las predeterminadas
 def load_campaigns():
