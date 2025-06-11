@@ -7,14 +7,12 @@ from email.header import decode_header
 # ----------------------------------
 USUARIO = "anderson.castaneda@intouchcx.com"
 CONTRASENA = "wfhyredeijygwoib"  # Tu App Password sin espacios
-DESDE = "26-May-2025"
-HASTA = "27-May-2025"  # BEFORE no incluye este día
+DESDE = "09-Jun-2025"
+HASTA = "10-Jun-2025"  # BEFORE no incluye este día
 
 # Asuntos específicos a buscar
 ASUNTOS_OBJETIVO = [
-    "Levi's",
-    "Short Calls Daily Report - 05/26/2025",
-    "Deloitte - Attendance report"
+    "WFM- GNC | Staff Status EOD",
 ]
 
 # Palabras clave que deben estar dentro del contenido o asunto

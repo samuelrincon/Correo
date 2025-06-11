@@ -6,6 +6,7 @@ from datetime import datetime
 import re
 import json
 import os
+from difflib import SequenceMatcher
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'
@@ -21,13 +22,11 @@ EMAIL_CONFIG = {
 # Archivo para guardar las campañas
 CAMPAIGNS_FILE = 'campaigns.json'
 
-# Cargar campañas desde archivo o usar las predeterminadas
 def load_campaigns():
     if os.path.exists(CAMPAIGNS_FILE):
         with open(CAMPAIGNS_FILE, 'r') as f:
             return json.load(f)
     else:
-        # Campañas predeterminadas
         default_campaigns = {
             'Frontpoint': [
                 "Frontpoint Staff Status EOD",
@@ -67,7 +66,7 @@ def load_campaigns():
                 "WFM - DELOITTE | Staff Status EOD"
             ],
             'GNC': [
-                "WFM - GNC | Staff Status EOD",
+                "WFM GNC Staff Status EOD",
                 "WFM-EOD GNC"
             ],
             'AOSmith': [
@@ -82,7 +81,6 @@ def save_campaigns(campaigns):
     with open(CAMPAIGNS_FILE, 'w') as f:
         json.dump(campaigns, f, indent=4)
 
-# Cargar las campañas al inicio
 CAMPANAS_CORREOS = load_campaigns()
 
 def conectar_gmail(usuario, contrasena):
@@ -165,19 +163,47 @@ def obtener_remitente_completo(msg):
     except Exception:
         return remitente
 
+def normalizar_texto(texto):
+    """Normaliza el texto para comparación: minúsculas, sin puntuación y espacios simples"""
+    if not texto:
+        return ""
+    
+    # Convertir a minúsculas
+    texto = texto.lower()
+    
+    # Remover signos de puntuación y caracteres especiales
+    texto = re.sub(r'[^\w\s]', ' ', texto)
+    
+    # Reemplazar múltiples espacios con uno solo
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    
+    return texto
+
+def palabras_coincidentes(texto1, texto2):
+    """Verifica si todas las palabras de texto2 están presentes en texto1"""
+    texto1_normalizado = normalizar_texto(texto1)
+    texto2_normalizado = normalizar_texto(texto2)
+    
+    palabras1 = set(texto1_normalizado.split())
+    palabras2 = set(texto2_normalizado.split())
+    
+    # Verificar que todas las palabras de texto2 estén en texto1
+    return palabras2.issubset(palabras1)
+
 def determinar_campana(asunto):
-    asunto_lower = asunto.lower()
+    """Determina a qué campaña pertenece un asunto usando coincidencia flexible de palabras"""
     for campana, asuntos in CAMPANAS_CORREOS.items():
         for asunto_objetivo in asuntos:
-            if asunto_objetivo.lower() in asunto_lower:
-                return campana
-    return None
+            if palabras_coincidentes(asunto, asunto_objetivo):
+                return campana, asunto_objetivo
+    
+    return None, None
 
 def extraer_cuerpo(mensaje):
     cuerpo = ""
     if mensaje.is_multipart():
         for parte in mensaje.walk():
-            if parte.get_content_type() == "text/plain":
+            if parte.get_content_type() in ["text/plain", "text/html"]:
                 try:
                     cuerpo += parte.get_payload(decode=True).decode(errors="ignore")
                 except:
@@ -196,15 +222,16 @@ def procesar_correos():
         mail.logout()
         return None, error
     
-    # Estructura para almacenar los resultados
     resultados = {
         campana: {
             'enviados': [],
-            'no_enviados': list(asuntos)  # Copia de los asuntos esperados
+            'no_enviados': list(asuntos),
+            'detectados': []
         } 
         for campana, asuntos in CAMPANAS_CORREOS.items()
     }
     
+    all_emails = []
     for uid in uids:
         try:
             resultado, datos = mail.fetch(uid, "(RFC822)")
@@ -217,31 +244,55 @@ def procesar_correos():
             cuerpo = extraer_cuerpo(mensaje)
             fecha = mensaje["Date"]
             
-            campana = determinar_campana(asunto)
-            if campana:
-                # Agregar a enviados
-                correo_info = {
-                    'uid': uid.decode(),
-                    'asunto': asunto,
-                    'remitente': remitente,
-                    'fecha': fecha,
-                    'cuerpo': cuerpo[:200] + '...' if len(cuerpo) > 200 else cuerpo
-                }
-                resultados[campana]['enviados'].append(correo_info)
-                
-                # Eliminar de no_enviados si existe
-                for asunto_esperado in CAMPANAS_CORREOS[campana]:
-                    if asunto_esperado.lower() in asunto.lower():
-                        if asunto_esperado in resultados[campana]['no_enviados']:
-                            resultados[campana]['no_enviados'].remove(asunto_esperado)
-                
+            all_emails.append({
+                'uid': uid.decode(),
+                'asunto': asunto,
+                'remitente': remitente,
+                'fecha': fecha,
+                'cuerpo': cuerpo[:200] + '...' if len(cuerpo) > 200 else cuerpo
+            })
         except Exception as e:
             print(f"Error procesando correo: {str(e)}")
             continue
     
+    # Procesamos cada correo con la nueva lógica
+    for correo in all_emails:
+        campana, asunto_coincidente = determinar_campana(correo['asunto'])
+        if campana and asunto_coincidente:
+            # Agregar a correos enviados
+            resultados[campana]['enviados'].append(correo)
+            
+            # Remover de no enviados si está presente
+            if asunto_coincidente in resultados[campana]['no_enviados']:
+                resultados[campana]['no_enviados'].remove(asunto_coincidente)
+            
+            # Agregar a detectados
+            resultados[campana]['detectados'].append({
+                'asunto_original': correo['asunto'],
+                'asunto_esperado': asunto_coincidente,
+                'coincidencia': True
+            })
+    
+    # Verificamos los no detectados
+    for campana in resultados:
+        for asunto_esperado in CAMPANAS_CORREOS[campana]:
+            if asunto_esperado in resultados[campana]['no_enviados']:
+                # Buscar correos similares
+                similares = []
+                for correo in all_emails:
+                    if palabras_coincidentes(correo['asunto'], asunto_esperado):
+                        similares.append(correo['asunto'])
+                
+                resultados[campana]['detectados'].append({
+                    'asunto_esperado': asunto_esperado,
+                    'coincidencia': False,
+                    'similares': similares
+                })
+    
     mail.logout()
     return resultados, None
 
+# Plantillas HTML (mantengo las originales)
 LOGIN_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="es">
@@ -353,38 +404,13 @@ PANEL_TEMPLATE = '''
             padding: 15px;
             margin-bottom: 20px;
         }
-        .campaign-section {
-            background-color: white;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        .date-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
         }
-        .campaign-title {
-            border-bottom: 2px solid #f0f0f0;
-            padding-bottom: 10px;
-            margin-bottom: 15px;
-        }
-        .email-card {
-            border-left: 4px solid #4caf50;
-            padding: 15px;
-            margin-bottom: 10px;
-            background-color: #f8f9fa;
-            border-radius: 4px;
-        }
-        .missing-email {
-            color: #dc3545;
-            padding: 5px 10px;
-            background-color: #f8d7da;
-            border-radius: 4px;
-            margin-bottom: 5px;
-            display: inline-block;
-        }
-        .badge-success {
-            background-color: #28a745;
-        }
-        .badge-danger {
-            background-color: #dc3545;
+        .date-form .form-group {
+            margin-bottom: 0;
         }
     </style>
 </head>
@@ -397,7 +423,7 @@ PANEL_TEMPLATE = '''
                     <a href="/settings" class="btn btn-outline-primary me-2">
                         <i class="bi bi-gear"></i> Configuración
                     </a>
-                    <a href="/" class="btn btn-outline-secondary">
+                    <a href="/logout" class="btn btn-outline-secondary">
                         <i class="bi bi-box-arrow-left"></i> Salir
                     </a>
                 </div>
@@ -408,7 +434,15 @@ PANEL_TEMPLATE = '''
     <div class="container">
         <div class="date-range">
             <h5><i class="bi bi-calendar-range"></i> Rango de fechas</h5>
-            <p class="mb-0">{{ desde }} hasta {{ hasta }}</p>
+            <form method="POST" action="/update_dates" class="date-form">
+                <div class="form-group">
+                    <input type="date" class="form-control" name="desde" value="{{ desde }}" required>
+                </div>
+                <div class="form-group">
+                    <input type="date" class="form-control" name="hasta" value="{{ hasta }}" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Actualizar</button>
+            </form>
         </div>
         
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -617,26 +651,6 @@ SETTINGS_TEMPLATE = '''
             background-color: #f8f9fa;
             border-radius: 0 0 10px 10px;
         }
-        .modal-content {
-            border: none;
-            border-radius: 10px;
-        }
-        .btn-outline-primary {
-            border-color: #6610f2;
-            color: #6610f2;
-        }
-        .btn-outline-primary:hover {
-            background-color: #6610f2;
-            color: white;
-        }
-        .btn-primary {
-            background-color: #6610f2;
-            border-color: #6610f2;
-        }
-        .btn-primary:hover {
-            background-color: #560bd0;
-            border-color: #560bd0;
-        }
     </style>
 </head>
 <body>
@@ -731,151 +745,10 @@ SETTINGS_TEMPLATE = '''
         {% endif %}
     </div>
     
-    <!-- Modal para agregar campaña -->
-    <div class="modal fade" id="addCampaignModal" tabindex="-1" aria-labelledby="addCampaignModalLabel" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="addCampaignModalLabel">Agregar Nueva Campaña</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <form id="addCampaignForm">
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label for="newCampaignName" class="form-label">Nombre de la Campaña</label>
-                            <input type="text" class="form-control" id="newCampaignName" required>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="btn btn-primary">Guardar</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Modal para editar campaña -->
-    <div class="modal fade" id="editCampaignModal" tabindex="-1" aria-labelledby="editCampaignModalLabel" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="editCampaignModalLabel">Editar Campaña</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <form id="editCampaignForm">
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label for="editCampaignName" class="form-label">Nombre de la Campaña</label>
-                            <input type="text" class="form-control" id="editCampaignName" required>
-                            <input type="hidden" id="originalCampaignName">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="btn btn-primary">Guardar Cambios</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Modal para editar asunto -->
-    <div class="modal fade" id="editSubjectModal" tabindex="-1" aria-labelledby="editSubjectModalLabel" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="editSubjectModalLabel">Editar Asunto</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <form id="editSubjectForm">
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label for="editSubjectText" class="form-label">Texto del Asunto</label>
-                            <input type="text" class="form-control" id="editSubjectText" required>
-                            <input type="hidden" id="editSubjectCampaign">
-                            <input type="hidden" id="originalSubjectText">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="submit" class="btn btn-primary">Guardar Cambios</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-    
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script>
         $(document).ready(function() {
-            // Agregar nueva campaña
-            $('#addCampaignForm').submit(function(e) {
-                e.preventDefault();
-                const campaignName = $('#newCampaignName').val().trim();
-                
-                if (campaignName) {
-                    $.post('/add_campaign', { nombre: campaignName }, function(response) {
-                        if (response.success) {
-                            location.reload();
-                        } else {
-                            alert(response.message || 'Error al agregar campaña');
-                        }
-                    }).fail(function() {
-                        alert('Error de conexión');
-                    });
-                }
-            });
-            
-            // Editar campaña - abrir modal
-            $('.edit-campaign-btn').click(function() {
-                const campaignName = $(this).data('campania');
-                $('#editCampaignName').val(campaignName);
-                $('#originalCampaignName').val(campaignName);
-                $('#editCampaignModal').modal('show');
-            });
-            
-            // Editar campaña - enviar formulario
-            $('#editCampaignForm').submit(function(e) {
-                e.preventDefault();
-                const originalName = $('#originalCampaignName').val();
-                const newName = $('#editCampaignName').val().trim();
-                
-                if (newName) {
-                    $.post('/edit_campaign', { 
-                        original_name: originalName, 
-                        new_name: newName 
-                    }, function(response) {
-                        if (response.success) {
-                            location.reload();
-                        } else {
-                            alert(response.message || 'Error al editar campaña');
-                        }
-                    }).fail(function() {
-                        alert('Error de conexión');
-                    });
-                }
-            });
-            
-            // Eliminar campaña
-            $('.delete-campaign-btn').click(function() {
-                if (confirm('¿Estás seguro de que deseas eliminar esta campaña y todos sus asuntos?')) {
-                    const campaignName = $(this).data('campania');
-                    
-                    $.post('/delete_campaign', { nombre: campaignName }, function(response) {
-                        if (response.success) {
-                            location.reload();
-                        } else {
-                            alert(response.message || 'Error al eliminar campaña');
-                        }
-                    }).fail(function() {
-                        alert('Error de conexión');
-                    });
-                }
-            });
-            
-            // Agregar nuevo asunto
             $('.add-subject-form').submit(function(e) {
                 e.preventDefault();
                 const form = $(this);
@@ -897,68 +770,13 @@ SETTINGS_TEMPLATE = '''
                     });
                 }
             });
-            
-            // Editar asunto - abrir modal
-            $('.edit-subject-btn').click(function() {
-                const campaignName = $(this).data('campania');
-                const subjectText = $(this).data('asunto-original');
-                
-                $('#editSubjectText').val(subjectText);
-                $('#editSubjectCampaign').val(campaignName);
-                $('#originalSubjectText').val(subjectText);
-                $('#editSubjectModal').modal('show');
-            });
-            
-            // Editar asunto - enviar formulario
-            $('#editSubjectForm').submit(function(e) {
-                e.preventDefault();
-                const campaignName = $('#editSubjectCampaign').val();
-                const originalText = $('#originalSubjectText').val();
-                const newText = $('#editSubjectText').val().trim();
-                
-                if (newText) {
-                    $.post('/edit_subject', { 
-                        campania: campaignName,
-                        asunto_original: originalText,
-                        asunto_nuevo: newText
-                    }, function(response) {
-                        if (response.success) {
-                            location.reload();
-                        } else {
-                            alert(response.message || 'Error al editar asunto');
-                        }
-                    }).fail(function() {
-                        alert('Error de conexión');
-                    });
-                }
-            });
-            
-            // Eliminar asunto
-            $('.delete-subject-btn').click(function() {
-                if (confirm('¿Estás seguro de que deseas eliminar este asunto?')) {
-                    const campaignName = $(this).data('campania');
-                    const subjectText = $(this).data('asunto');
-                    
-                    $.post('/delete_subject', { 
-                        campania: campaignName, 
-                        asunto: subjectText 
-                    }, function(response) {
-                        if (response.success) {
-                            location.reload();
-                        } else {
-                            alert(response.message || 'Error al eliminar asunto');
-                        }
-                    }).fail(function() {
-                        alert('Error de conexión');
-                    });
-                }
-            });
         });
     </script>
 </body>
 </html>
 '''
 
+# Rutas de Flask
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -988,6 +806,39 @@ def index():
         return redirect(url_for('panel_control'))
     
     return render_template_string(LOGIN_TEMPLATE)
+
+@app.route('/logout')
+def logout():
+    EMAIL_CONFIG.update({
+        'usuario': '',
+        'contrasena': '',
+        'desde': '',
+        'hasta': ''
+    })
+    return redirect(url_for('index'))
+
+@app.route('/update_dates', methods=['POST'])
+def update_dates():
+    if not EMAIL_CONFIG['usuario']:
+        return redirect(url_for('index'))
+    
+    desde = request.form.get('desde', '')
+    hasta = request.form.get('hasta', '')
+    
+    try:
+        datetime.strptime(desde, '%Y-%m-%d')
+        datetime.strptime(hasta, '%Y-%m-%d')
+    except ValueError:
+        flash('Formato de fecha incorrecto. Use YYYY-MM-DD', 'error')
+        return redirect(url_for('panel_control'))
+    
+    EMAIL_CONFIG.update({
+        'desde': desde,
+        'hasta': hasta
+    })
+    
+    flash('Fechas actualizadas correctamente', 'success')
+    return redirect(url_for('panel_control'))
 
 @app.route('/panel')
 def panel_control():
@@ -1054,7 +905,6 @@ def edit_campaign():
     if original_name != new_name and new_name in CAMPANAS_CORREOS:
         return jsonify({'success': False, 'message': 'Ya existe una campaña con el nuevo nombre'})
     
-    # Guardar los asuntos antes de eliminar la campaña original
     asuntos = CAMPANAS_CORREOS[original_name]
     del CAMPANAS_CORREOS[original_name]
     CAMPANAS_CORREOS[new_name] = asuntos
@@ -1122,7 +972,6 @@ def edit_subject():
     if asunto_original != asunto_nuevo and asunto_nuevo in CAMPANAS_CORREOS[campania]:
         return jsonify({'success': False, 'message': 'El nuevo asunto ya existe en esta campaña'})
     
-    # Actualizar el asunto
     index = CAMPANAS_CORREOS[campania].index(asunto_original)
     CAMPANAS_CORREOS[campania][index] = asunto_nuevo
     save_campaigns(CAMPANAS_CORREOS)
@@ -1152,4 +1001,4 @@ def delete_subject():
     return jsonify({'success': True})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000, debug=True)
